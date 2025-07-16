@@ -389,8 +389,8 @@ def gen_hdiag_MVP(hdiag, n_occ, n_vir):
 
 def gen_iajb_MVP(T_ia):
     '''
-    (ia|jb) = Σ_Pjb (T_left_ia^P T_right_jb^P V_jb^m)
-            = Σ_P [ T_left_ia^P Σ_jb(T_right_jb^P V_jb^m) ]
+    (ia|jb)V = Σ_Pjb (T_left_ia^P T_right_jb^P V_jb^m)
+             = Σ_P [ T_left_ia^P Σ_jb(T_right_jb^P V_jb^m) ]
     (ia|jb) in RKS
 
     V in shape (m, n_occ * n_vir)
@@ -418,16 +418,22 @@ def gen_iajb_MVP(T_ia):
         # Initialize result tensor
         iajb_V = cp.zeros((n_state, n_occ, n_vir), dtype=V.dtype)
 
-        estimated_chunk_size_bytes = n_occ * n_vir * T_ia.itemsize 
+        # 1 denotes one auxao, we are slucing the auxao dimension.
+        n_Tia_chunk = 1 * n_occ * n_vir
+        n_TjbVjb_chunk = 1 * n_state
+        n_iajb_V_chunk = n_state * n_occ * n_vir 
+
+        estimated_chunk_size_bytes = (n_Tia_chunk + n_TjbVjb_chunk + n_iajb_V_chunk) * T_ia.itemsize 
 
         available_gpu_memory = get_avail_mem()
 
         # Estimate the optimal chunk size based on available GPU memory
-        aux_chunk_size = int(available_gpu_memory * 0.4 // estimated_chunk_size_bytes)
+        aux_chunk_size = int(available_gpu_memory * 0.8 // estimated_chunk_size_bytes)
 
         # Ensure the chunk size is at least 1 and doesn't exceed the total number of auxao
         aux_chunk_size = max(1, min(nauxao, aux_chunk_size))
-
+        print('iajb chunks', len(range(0, nauxao, aux_chunk_size)))
+        print(get_memory_info('  iajb_V before slicing aux')) 
         # Iterate over chunks of the auxao dimension
         for aux_start in range(0, nauxao, aux_chunk_size):
             aux_end = min(aux_start + aux_chunk_size, nauxao)
@@ -437,13 +443,10 @@ def gen_iajb_MVP(T_ia):
             Tjb_Vjb_chunk = contract("Pjb,mjb->Pm", Tjb_chunk, V)
 
             Tia_chunk = Tjb_chunk  # Shape: (aux_range, n_occ, n_vir)
-            iajb_V_chunk = contract("Pia,Pm->mia", Tia_chunk, Tjb_Vjb_chunk)
+            iajb_V += contract("Pia,Pm->mia", Tia_chunk, Tjb_Vjb_chunk)
 
-            del Tia_chunk, Tjb_Vjb_chunk
-
-            iajb_V += iajb_V_chunk  # Accumulate the result
-
-            del iajb_V_chunk
+            # Release intermediate variables and clean up memory, must!
+            del Tjb_chunk, Tia_chunk, Tjb_Vjb_chunk
             release_memory()
 
         return iajb_V
@@ -453,14 +456,14 @@ def gen_iajb_MVP(T_ia):
 
 def gen_ijab_MVP(T_ij, T_ab):
     '''
-    (ij|ab) = Σ_Pjb (T_ij^P T_ab^P V_jb^m)
-            = Σ_P [T_ij^P Σ_jb(T_ab^P V_jb^m)]
+    (ij|ab)V = Σ_Pjb (T_ij^P T_ab^P V_jb^m)
+             = Σ_P [T_ij^P Σ_jb(T_ab^P V_jb^m)]
     V in shape (m, n_occ * n_vir)
     '''
 
     # def ijab_MVP(V):
-    #     T_ab_V = einsum("Pab,mjb->Pamj", T_ab, V)
-    #     ijab_V = einsum("Pij,Pamj->mia", T_ij, T_ab_V)
+    #     T_ab_V = contract("Pab,mjb->Pamj", T_ab, V)
+    #     ijab_V = contract("Pij,Pamj->mia", T_ij, T_ab_V)
     #     return ijab_V
 
     def ijab_MVP(V):
@@ -474,6 +477,9 @@ def gen_ijab_MVP(T_ij, T_ab):
         Returns:
             ijab_V (cupy.ndarray): Result tensor of shape (n_state, n_occ, n_vir).
         '''
+        T_ij_gpu = cp.asarray(T_ij) # if T_ij was in RAM, upload to GPU on calling
+        nauxao, n_occ, n_occ = T_ij.shape
+
         nauxao, n_vir, n_vir = T_ab.shape  # Dimensions of T_ab
         n_state, n_occ, n_vir = V.shape      # Dimensions of V
 
@@ -482,32 +488,48 @@ def gen_ijab_MVP(T_ij, T_ab):
 
         # Get free memory and dynamically calculate chunk size
         available_gpu_memory = get_avail_mem()
-        bytes_per_vir = nauxao * n_occ * n_state * T_ab.itemsize  
-        vir_chunk_size = max(1, int(available_gpu_memory * 0.4 // bytes_per_vir)) 
+
+        # 1 denotes one vir MO, we are slucing the n_vir dimension.
+        n_T_ab_chunk = nauxao * 1 * n_vir
+        n_T_ab_V_chunk = nauxao * 1 * n_state * n_occ 
+        n_ijab_V_chunk = n_state * n_occ * 1
+
+        bytes_per_vir = 2*( n_T_ab_chunk + n_T_ab_V_chunk + n_ijab_V_chunk) * T_ab.itemsize  
+        print('available_gpu_memory', available_gpu_memory)
+        print('bytes_per_vir', bytes_per_vir)
+        vir_chunk_size = max(1, int(available_gpu_memory * 0.8 // bytes_per_vir)) 
+        # vir_chunk_size = 100
+        print(get_memory_info('  ijab_V before slicing vir')) 
+        print('vir_chunk_size', vir_chunk_size)
+            
+        print('chuncks', len(range(0, n_vir, vir_chunk_size)))
 
         # Iterate over chunks of the n_vir dimension
+        # i = 0
         for vir_start in range(0, n_vir, vir_chunk_size):
+            # print(' vir chunk', i,  available_gpu_memory)
+            # i += 1
+
             vir_end = min(vir_start + vir_chunk_size, n_vir)
             # vir_range = vir_end - vir_start
 
-            # Extract the current chunk of V
-            V_chunk = V[:, :, vir_start:vir_end]  # Shape: (n_state, n_occ, vir_range)
-
             # Extract the corresponding chunk of T_ab
-            T_ab_chunk = T_ab[:, vir_start:vir_end, vir_start:vir_end]  # Shape: (nauxao, vir_range, n_vir)
+            T_ab_chunk = T_ab[:, vir_start:vir_end, :]  # Shape: (nauxao, vir_range, n_vir)
 
             # Compute T_ab_V for the current chunk
-            T_ab_V_chunk = contract("Pab,mjb->Pamj", T_ab_chunk, V_chunk)
+            T_ab_chunk_V = contract("Pab,mjb->Pamj", T_ab_chunk, V)
 
             # Compute ijab_V for the current chunk
-            ijab_V[:, :, vir_start:vir_end] = contract("Pij,Pamj->mia", T_ij, T_ab_V_chunk)
+            ijab_V[:, :, vir_start:vir_end] = contract("Pij,Pamj->mia", T_ij_gpu, T_ab_chunk_V)
 
-            # Release intermediate variables and clean up memory
-            # del V_chunk, T_ab_V_chunk
+            # Release intermediate variables and clean up memory, must!
+            del T_ab_chunk, T_ab_chunk_V
+            release_memory()
 
+        del T_ij_gpu
 
         return ijab_V
-
+        
 
     return ijab_MVP
 
@@ -955,7 +977,34 @@ class TDA(RisBase):
                 AV = hdiag_MVP(V) + 2*iajb_MVP(V) - a_x*ijab_MVP(V)
                 for RSH, a_x = 1
 
-                if not MO truncation, then n_occ-rest_occ=0 and rest_vir=n_vir
+                
+                With MO truncation, most the occ and vir orbitals (transition pair) are neglected in the exchange part
+
+                As shown below, * denotes the included transition pair
+                         -------------------
+                       /                  /
+       original X =   /                  /  nstates
+                     -------------------
+                    |******************|
+             n_occ  |******************|  
+                    |******************|
+                    |******************|
+                    |------------------|
+                            n_vir
+        becomes:
+                         -------------------
+                       /                  /
+                X' =  /                  /  nstates
+                     -------------------
+                    |                  |
+     n_occ-rest_occ |                  |  
+                    |-----|------------|
+                    |*****|            |  
+         rest_occ   |*****|            |
+                    |-----|------------|
+                  rest_vir
+
+                (If no MO truncation, then n_occ-rest_occ=0 and rest_vir=n_vir)
             '''
             nstates = X.shape[0]
             X = X.reshape(nstates, self.n_occ, self.n_vir)
