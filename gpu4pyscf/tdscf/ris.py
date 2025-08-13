@@ -15,6 +15,7 @@
 import numpy as np
 import cupy as cp
 import cupyx.scipy.linalg as cpx_linalg
+import pyscf
 
 from pyscf import gto, lib
 from gpu4pyscf import scf
@@ -24,6 +25,8 @@ from gpu4pyscf.tdscf import parameter, math_helper, spectralib, _lr_eig, _krylov
 from pyscf.data.nist import HARTREE2EV
 from gpu4pyscf.lib import logger
 from gpu4pyscf.df import int3c2e
+from gpu4pyscf.pbc.dft.multigrid import MultiGridNumInt
+
 
 CITATION_INFO = """
 Please cite the TDDFT-ris method:
@@ -448,6 +451,30 @@ def gen_iajb_MVP(T_ia):
 
     return iajb_MVP
 
+
+def gen_iajb_MVP_multigrid(ris_obj):
+    mf = ris_obj._scf
+    mo_coeff = mf.mo_coeff
+    n_occ = ris_obj.n_occ
+    orbo = mo_coeff[:,:n_occ]
+    orbv = mo_coeff[:,n_occ:]
+    
+    cell = pyscf.M(
+        a = np.eye(3)*20,
+        atom = mf.mol._atom,
+        basis = mf.mol.basis,
+        verbose = 3,
+    )
+    cell.mesh = [400,400,400]
+
+    def iajb_MVP(V):
+        ex_dm = cp.einsum('ui, va, mia->muv', orbo, orbv, V)
+        # vj (nkpts, nao, nao) 
+        ''' iajbX = C C uvkl C C X= C C uvkl P = CC muv '''
+        vj = MultiGridNumInt(cell).get_j(dm=ex_dm, hermi=1)
+        iajb_V = cp.einsum('ui,va, muv->mia', orbo, orbv, vj)
+        return iajb_V
+    return iajb_MVP
 
 def gen_ijab_MVP(T_ij, T_ab):
     '''
@@ -1171,7 +1198,7 @@ class TDA(RisBase):
 
         iajb_MVP = gen_iajb_MVP(T_ia=T_ia_J)
         ijab_MVP = gen_ijab_MVP(T_ij=T_ij_K, T_ab=T_ab_K)
-
+        iajb_MVP_multigrid = gen_iajb_MVP_multigrid(self)
         def RKS_TDA_hybrid_MVP(X):
             ''' hybrid or range-sparated hybrid, a_x > 0
                 return AX
@@ -1211,8 +1238,15 @@ class TDA(RisBase):
             X = X.reshape(nstates, self.n_occ, self.n_vir)
             cpu0 = log.init_timer()
             AX = hdiag_MVP(X) 
-            AX += 2 * iajb_MVP(X) 
+            # AX += 2 * iajb_MVP(X) 
+            # AX += 2* iajb_MVP_multigrid(X)
             log.timer('--iajb_MVP', *cpu0)
+
+            ris = iajb_MVP(X) 
+            multigrid = iajb_MVP_multigrid(X)
+            print('ris - multigrid', cp.linalg.norm(ris - multigrid))
+            AX += 2* multigrid
+
 
             cpu1 = log.init_timer()
             exchange = self.a_x * ijab_MVP(X[:,self.n_occ-self.rest_occ:,:self.rest_vir])
