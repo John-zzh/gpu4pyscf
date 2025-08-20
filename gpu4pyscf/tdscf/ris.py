@@ -460,18 +460,20 @@ def gen_iajb_MVP_multigrid(ris_obj):
     orbv = mo_coeff[:,n_occ:]
     
     cell = pyscf.M(
-        a = np.eye(3)*20,
+        a = np.eye(3)*12,
         atom = mf.mol._atom,
         basis = mf.mol.basis,
         verbose = 3,
+        unit='Bohr'
+
     )
-    cell.mesh = [400,400,400]
+    cell.mesh = [100]*3
 
     def iajb_MVP(V):
         ex_dm = cp.einsum('ui, va, mia->muv', orbo, orbv, V)
         # vj (nkpts, nao, nao) 
         ''' iajbX = C C uvkl C C X= C C uvkl P = CC muv '''
-        vj = MultiGridNumInt(cell).get_j(dm=ex_dm, hermi=1)
+        vj = MultiGridNumInt(cell).get_j(dm=ex_dm)
         iajb_V = cp.einsum('ui,va, muv->mia', orbo, orbv, vj)
         return iajb_V
     return iajb_MVP
@@ -1246,6 +1248,7 @@ class TDA(RisBase):
             multigrid = iajb_MVP_multigrid(X)
             print('ris - multigrid', cp.linalg.norm(ris - multigrid))
             AX += 2* multigrid
+            # AX += 2*ris
 
 
             cpu1 = log.init_timer()
