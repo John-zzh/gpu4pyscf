@@ -83,6 +83,7 @@ def get_minimal_auxbasis(auxmol_basis_keys, theta, fitting_basis):
         H5 [[0, [0.1999828038466018, 1.0]]]
         H6 [[0, [0.1999828038466018, 1.0]]]
     '''
+    
     aux_basis = {}
 
     for atom_index in auxmol_basis_keys:
@@ -91,6 +92,8 @@ def get_minimal_auxbasis(auxmol_basis_keys, theta, fitting_basis):
         exponent_alpha = theta/R^2
         '''
         exp_alpha = parameter.ris_exp[atom] * theta
+
+        
 
         if 's' in fitting_basis:
             aux_basis[atom_index] = [[0, [exp_alpha, 1.0]]]
@@ -121,8 +124,11 @@ def get_auxmol(mol, theta=0.2, fitting_basis='s'):
     turns off PySCF built-in parsing function
     '''
     auxmol = mol.copy()
-    auxmol_basis_keys = mol._basis.keys()
-    auxmol.basis = get_minimal_auxbasis(auxmol_basis_keys, theta, fitting_basis)
+    if fitting_basis == 'full':
+        auxmol.basis='def2-universal-jfit'
+    else:
+        auxmol_basis_keys = mol._basis.keys()
+        auxmol.basis = get_minimal_auxbasis(auxmol_basis_keys, theta, fitting_basis)
     auxmol.build(dump_input=False, parse_arg=False)
     return auxmol
 
@@ -460,14 +466,14 @@ def gen_iajb_MVP_multigrid(ris_obj):
     orbv = mo_coeff[:,n_occ:]
     
     cell = pyscf.M(
-        a = np.eye(3)*12,
+        a = np.eye(3)*50,
         atom = mf.mol._atom,
         basis = mf.mol.basis,
         verbose = 3,
         unit='Bohr'
 
     )
-    cell.mesh = [100]*3
+    cell.mesh = [200]*3
 
     def iajb_MVP(V):
         ex_dm = cp.einsum('ui, va, mia->muv', orbo, orbv, V)
@@ -1247,8 +1253,8 @@ class TDA(RisBase):
             ris = iajb_MVP(X) 
             multigrid = iajb_MVP_multigrid(X)
             print('ris - multigrid', cp.linalg.norm(ris - multigrid))
-            AX += 2* multigrid
-            # AX += 2*ris
+            # AX += 2* multigrid
+            AX += 2*ris
 
 
             cpu1 = log.init_timer()
