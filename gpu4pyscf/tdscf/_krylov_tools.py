@@ -545,6 +545,7 @@ def krylov_solver(matrix_vector_product, hdiag, problem_type='eigenvalue',
         gc.collect()
         ''' Matrix-vector product '''
         t0 = log.init_timer()
+        iter0 = log.init_timer()
         # log.info( f'V_holder type {type(V_holder)}')
         # log.info( f'W_holder type {type(W_holder)}')
         log.info(gpu_mem_info(f' ▶ ------- iter {ii+1:<3d} MVP starts, {size_new-size_old} vectors'))
@@ -825,6 +826,8 @@ def krylov_solver(matrix_vector_product, hdiag, problem_type='eigenvalue',
             #     log.info(f'V_holder orthonormality: {math_helper.check_orthonormal(V_holder[:size_new, :])}')
 
             _time_add(log, t_fill_holder, t0)
+
+        log.timer('  iteration cost', *iter0)
 
     if ii == max_iter - 1 and max_norm >= conv_tol:
         log.info(f'=== {problem_type.capitalize()} Krylov Solver not converged below {conv_tol:.2e} due to max iteration limit ! ===')

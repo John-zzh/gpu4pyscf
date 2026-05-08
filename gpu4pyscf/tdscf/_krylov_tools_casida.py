@@ -481,6 +481,7 @@ def ABBA_krylov_solver(matrix_vector_product, hdiag, problem_type='eigenvalue',
         log.info(f'     size_old, size_new, n_new_vectors: {size_old}, {size_new}, {n_new_vectors}')
         ''' Matrix-vector product '''
         t0 = log.init_timer()
+        iter0 = log.init_timer()
 
         log.info(f'     X_p_Y_new {X_p_Y_new.shape} {X_p_Y_new.nbytes//1024**2} MB')
         log.info(f'     X_m_Y_new {X_m_Y_new.shape} {X_m_Y_new.nbytes//1024**2} MB')
@@ -730,7 +731,7 @@ def ABBA_krylov_solver(matrix_vector_product, hdiag, problem_type='eigenvalue',
                 log.warn('All new guesses kicked out during filling holder !!!!!!!')
                 break
 
-            assert _n_new_vectors == n_new_vectors, 'X_p_Y_new_vecs and new_XmY_vecs are not equal'
+            assert _n_new_vectors == n_new_vectors, 'X_p_Y_new_vecs and X_m_Y_new_vecs are not equal'
 
             size_new = size_old + n_new_vectors
 
@@ -745,10 +746,12 @@ def ABBA_krylov_solver(matrix_vector_product, hdiag, problem_type='eigenvalue',
             _time_add(log, t_fill_holder, t0)
             log.timer('  normalize_new_vecs  cost', *t0)
 
+        log.timer('  iteration cost', *iter0)
+
     if ii == (max_iter -1) and max_norm >= conv_tol:
-        log.warn(f'=== {problem_type.capitalize()} ABBA Krylov Solver eigen solver not converged below {conv_tol:.2e} due to max iteration limit ! ===')
-        log.warn(f'Current residual norms: {r_norms.tolist()}')
-        log.warn(f'max residual norms {cp.max(r_norms)}')
+        log.info(f'=== {problem_type.capitalize()} ABBA Krylov Solver eigen solver not converged below {conv_tol:.2e} due to max iteration limit ! ===')
+        log.info(f'Current residual norms: {r_norms.tolist()}')
+        log.info(f'max residual norms {cp.max(r_norms)}')
 
     converged = r_norms <= conv_tol
 
